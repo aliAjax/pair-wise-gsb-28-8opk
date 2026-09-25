@@ -1,182 +1,78 @@
-import { FormEvent, useMemo, useState } from "react";
+// 页面层：路线应急台 UI，资料见 data.ts，计算见 logic.ts
 
-type Field = {
-  key: string;
-  label: string;
-  type?: "number" | "date" | "select";
-  options?: string[];
-};
-
-type RecordItem = {
-  id: string;
-  status: string;
-  notes: string;
-  createdAt: string;
-  [key: string]: string | number;
-};
+import { useState } from "react";
+import { BoardState, Order, Trip, drivers, trips, loadState, resetState, saveState } from "./data";
+import { applyTransfer, loadedKg, tripLabel } from "./logic";
 
 const project = {
-  "number": 14,
-  "folder": "hxwl/frontend/hxwlfront-14",
-  "framework": "react",
-  "title": "配送任务拖拽排班",
-  "subtitle": "把待分配订单安排给司机，并统计任务数和总重量。",
-  "industry": "物流",
-  "stack": [
-    "React",
-    "Vite",
-    "TypeScript",
-    "Ant Design",
-    "dnd-kit"
-  ],
-  "storageKey": "hxwlfront-14-schedule",
-  "formTitle": "新增待分配订单",
-  "primaryAction": "加入待分配",
-  "entityLabel": "订单",
-  "statuses": [
-    "待分配",
-    "已分配",
-    "已完成"
-  ],
-  "filters": [
-    "全部司机",
-    "刘师傅",
-    "赵师傅",
-    "孙师傅"
-  ],
-  "fields": [
-    {
-      "key": "orderNo",
-      "label": "订单号"
-    },
-    {
-      "key": "driver",
-      "label": "司机",
-      "type": "select",
-      "options": [
-        "刘师傅",
-        "赵师傅",
-        "孙师傅"
-      ]
-    },
-    {
-      "key": "weight",
-      "label": "重量kg",
-      "type": "number"
-    },
-    {
-      "key": "destination",
-      "label": "目的地"
-    }
-  ],
-  "records": [
-    {
-      "orderNo": "ORD-9012",
-      "driver": "刘师傅",
-      "weight": 260,
-      "destination": "浦东",
-      "status": "已分配",
-      "notes": "上午配送"
-    },
-    {
-      "orderNo": "ORD-9031",
-      "driver": "赵师傅",
-      "weight": 140,
-      "destination": "嘉定",
-      "status": "待分配",
-      "notes": "待排班"
-    }
-  ],
-  "metricLabels": [
-    "订单数",
-    "已分配",
-    "总重量"
-  ]
-} as const;
+  industry: "物流",
+  title: "路线应急台",
+  subtitle: "嘉定线封路停运。同一车次可整批转给有空位的司机，也可勾选部分订单拆单；超吨、时段相撞或错过下一站的订单自动留在待处理区并标注原因。",
+};
 
-const fields = project.fields as unknown as Field[];
-const statuses: string[] = [...project.statuses];
-
-function createBlank() {
-  return Object.fromEntries(fields.map((field) => [field.key, field.type === "number" ? 0 : ""]));
+function formatTime(iso: string) {
+  return new Date(iso).toLocaleString("zh-CN", { hour12: false });
 }
 
-function loadRecords(): RecordItem[] {
-  const raw = localStorage.getItem(project.storageKey);
-  if (!raw) {
-    return project.records.map((record, index) => ({
-      ...record,
-      id: `seed-${index + 1}`,
-      createdAt: new Date(Date.now() - index * 86400000).toISOString()
-    })) as RecordItem[];
-  }
-  try {
-    return JSON.parse(raw) as RecordItem[];
-  } catch {
-    return [];
-  }
-}
-
-function saveRecords(records: RecordItem[]) {
-  localStorage.setItem(project.storageKey, JSON.stringify(records));
-}
-
-function nextStatus(status: string) {
-  const index = statuses.indexOf(status);
-  return statuses[(index + 1) % statuses.length];
-}
-
-function primaryText(record: RecordItem) {
-  const first = fields[0];
-  const second = fields[1];
-  return [record[first.key], record[second.key]].filter(Boolean).join(" / ") || project.entityLabel;
+function driverOf(trip: Trip) {
+  return drivers.find((driver) => driver.id === trip.driverId)!;
 }
 
 export default function App() {
-  const [records, setRecords] = useState<RecordItem[]>(loadRecords);
-  const [form, setForm] = useState<Record<string, string | number>>(createBlank);
-  const [note, setNote] = useState("");
-  const [filter, setFilter] = useState<string>(project.filters[0]);
+  const [state, setState] = useState<BoardState>(loadState);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [targetTripId, setTargetTripId] = useState("");
+  const [reason, setReason] = useState("");
+  const [notice, setNotice] = useState("");
 
-  const filteredRecords = useMemo(() => {
-    if (filter.startsWith("全部")) return records;
-    return records.filter((record) => Object.values(record).includes(filter));
-  }, [filter, records]);
+  const openTrips = trips.filter((trip) => !trip.closed);
+  const pendingOrders = state.orders.filter((order) => order.tripId === null);
+  const selectedOrders = state.orders.filter((order) => selected.includes(order.id));
+  const selectedWeight = selectedOrders.reduce((sum, order) => sum + order.weightKg, 0);
+  const movedCount = state.logs.reduce((sum, log) => sum + log.orderNos.length, 0);
 
-  const metrics = useMemo(() => {
-    const total = records.length;
-    const second = records.filter((record) => record.status === statuses[1]).length;
-    const third = records.filter((record) => record.status === statuses[2]).length;
-    const numberValues = records.flatMap((record) =>
-      fields.filter((field) => field.type === "number").map((field) => Number(record[field.key] || 0))
-    );
-    const sum = numberValues.reduce((acc, value) => acc + value, 0);
-    return [total, second || sum, third || Math.round(sum / Math.max(total, 1))];
-  }, [records]);
-
-  const chartRows = statuses.map((status) => ({
-    status,
-    value: records.filter((record) => record.status === status).length
-  }));
-  const maxChart = Math.max(1, ...chartRows.map((row) => row.value));
-
-  function updateRecords(next: RecordItem[]) {
-    setRecords(next);
-    saveRecords(next);
+  function commit(next: BoardState) {
+    setState(next);
+    saveState(next);
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const next: RecordItem = {
-      ...form,
-      id: crypto.randomUUID(),
-      status: statuses[0],
-      notes: note || "暂无备注",
-      createdAt: new Date().toISOString()
-    } as RecordItem;
-    updateRecords([next, ...records]);
-    setForm(createBlank());
-    setNote("");
+  function toggle(orderId: string) {
+    setSelected((prev) => (prev.includes(orderId) ? prev.filter((id) => id !== orderId) : [...prev, orderId]));
+  }
+
+  function selectBatch(orderIds: string[]) {
+    setSelected((prev) => Array.from(new Set([...prev, ...orderIds])));
+  }
+
+  function handleTransfer() {
+    if (!selected.length || !targetTripId || !reason.trim()) return;
+    const next = applyTransfer(state, trips, drivers, selected, targetTripId, reason.trim());
+    const okCount = selected.filter((id) => next.orders.find((order) => order.id === id)?.tripId === targetTripId).length;
+    const heldCount = selected.length - okCount;
+    setNotice(`改派完成：${okCount} 单成功转入 ${tripLabel(targetTripId, trips)}${heldCount ? `，${heldCount} 单留在待处理区` : ""}`);
+    commit(next);
+    setSelected([]);
+    setReason("");
+  }
+
+  function handleReset() {
+    if (!window.confirm("恢复初始数据并清空改派记录？")) return;
+    commit(resetState());
+    setSelected([]);
+    setNotice("");
+  }
+
+  function renderOrderRow(order: Order) {
+    return (
+      <label className={`order-row ${selected.includes(order.id) ? "picked" : ""}`} key={order.id}>
+        <input type="checkbox" checked={selected.includes(order.id)} onChange={() => toggle(order.id)} />
+        <span className="order-no">{order.orderNo}</span>
+        <span>{order.route}</span>
+        <span>{order.windowStart}-{order.windowEnd}</span>
+        <span>{order.weightKg}kg</span>
+        {order.fragile ? <span className="fragile">易碎</span> : <span />}
+      </label>
+    );
   }
 
   return (
@@ -184,104 +80,115 @@ export default function App() {
       <div className="shell">
         <header className="topbar">
           <div>
-            <p className="eyebrow">{project.industry}行业前端最小闭环</p>
+            <p className="eyebrow">{project.industry} · 封路应急调度</p>
             <h1>{project.title}</h1>
             <p className="subtitle">{project.subtitle}</p>
           </div>
-          <div className="stack">{project.stack.map((item) => <span className="tag" key={item}>{item}</span>)}</div>
+          <button className="secondary" type="button" onClick={handleReset}>恢复初始数据</button>
         </header>
 
         <section className="metrics">
-          {project.metricLabels.map((label, index) => (
-            <article className="metric" key={label}>
-              <span>{label}</span>
-              <strong>{metrics[index]}</strong>
-            </article>
-          ))}
+          <article className="metric"><span>待处理订单</span><strong>{pendingOrders.length}</strong></article>
+          <article className="metric"><span>已改派订单</span><strong>{movedCount}</strong></article>
+          <article className="metric"><span>封路车次</span><strong>{trips.filter((trip) => trip.closed).length}</strong></article>
         </section>
 
-        <section className="workspace">
-          <form className="panel" onSubmit={handleSubmit}>
-            <h2>{project.formTitle}</h2>
-            <div className="form-grid">
-              {fields.map((field) => (
-                <label key={field.key}>
-                  {field.label}
-                  {field.type === "select" ? (
-                    <select
-                      value={String(form[field.key])}
-                      onChange={(event) => setForm({ ...form, [field.key]: event.target.value })}
-                      required
-                    >
-                      <option value="">请选择</option>
-                      {field.options?.map((option) => <option key={option}>{option}</option>)}
-                    </select>
-                  ) : (
-                    <input
-                      type={field.type || "text"}
-                      value={form[field.key]}
-                      onChange={(event) =>
-                        setForm({ ...form, [field.key]: field.type === "number" ? Number(event.target.value) : event.target.value })
-                      }
-                      required
-                    />
-                  )}
-                </label>
-              ))}
-              <label>
-                备注
-                <textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="填写处理说明或现场备注" />
-              </label>
-              <button type="submit">{project.primaryAction}</button>
-            </div>
-          </form>
+        {notice && <div className="notice">{notice}</div>}
 
-          <section className="list-panel">
-            <div className="toolbar">
-              <h2>{project.entityLabel}列表</h2>
-              <select value={filter} onChange={(event) => setFilter(event.target.value)}>
-                {project.filters.map((item) => <option key={item}>{item}</option>)}
-              </select>
-            </div>
-
-            <div className="record-grid">
-              {filteredRecords.length === 0 ? <div className="empty">暂无匹配数据</div> : filteredRecords.map((record) => (
-                <article className="record" key={record.id}>
-                  <div className="record-head">
-                    <p className="record-title">{primaryText(record)}</p>
-                    <span className="status">{record.status}</span>
+        <section className="board">
+          <div className="col">
+            {trips.map((trip) => {
+              const driver = driverOf(trip);
+              const tripOrders = state.orders.filter((order) => order.tripId === trip.id);
+              const loaded = loadedKg(state.orders, trip.id);
+              const pct = Math.min(100, Math.round((loaded / driver.capacityKg) * 100));
+              return (
+                <section className="list-panel trip-card" key={trip.id}>
+                  <div className="toolbar">
+                    <h2>
+                      {trip.id} · {trip.route}
+                      {trip.closed && <span className="closed-badge">封路停运</span>}
+                    </h2>
+                    {tripOrders.length > 0 && (
+                      <button className="secondary" type="button" onClick={() => selectBatch(tripOrders.map((order) => order.id))}>
+                        整批选择
+                      </button>
+                    )}
                   </div>
-                  <div className="details">
-                    {fields.map((field) => (
-                      <span key={field.key}>{field.label}: {record[field.key]}</span>
+                  <p className="driver-line">
+                    {driver.name} · 上限 {driver.capacityKg}kg · 已装 {loaded}kg · 下一站 {driver.nextStopTime}
+                    {driver.hasBufferBox ? " · 有缓冲箱" : " · 无缓冲箱"}
+                  </p>
+                  <div className="load-track"><div className={`load-fill ${pct >= 90 ? "hot" : ""}`} style={{ width: `${pct}%` }} /></div>
+                  <div className="order-list">
+                    {tripOrders.length === 0 ? <div className="empty">车上暂无订单</div> : tripOrders.map(renderOrderRow)}
+                  </div>
+                </section>
+              );
+            })}
+
+            <section className="list-panel pending-panel">
+              <div className="toolbar">
+                <h2>待处理区（{pendingOrders.length}）</h2>
+                {pendingOrders.length > 0 && (
+                  <button className="secondary" type="button" onClick={() => selectBatch(pendingOrders.map((order) => order.id))}>
+                    全选待处理
+                  </button>
+                )}
+              </div>
+              <div className="order-list">
+                {pendingOrders.length === 0 ? <div className="empty">暂无滞留订单</div> : pendingOrders.map((order) => (
+                  <div key={order.id}>
+                    {renderOrderRow(order)}
+                    <span className="reason">{order.pendingReason}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
+
+          <div className="col">
+            <section className="panel">
+              <h2>改派面板</h2>
+              <div className="form-grid">
+                <p className="hint">已选 {selected.length} 单 · 合计 {selectedWeight}kg。点车次卡上的「整批选择」整批转移，勾选部分订单即拆单。</p>
+                <label>
+                  目标车次
+                  <select value={targetTripId} onChange={(event) => setTargetTripId(event.target.value)}>
+                    <option value="">请选择</option>
+                    {openTrips.map((trip) => (
+                      <option key={trip.id} value={trip.id}>
+                        {trip.id} · {trip.route} · {driverOf(trip).name}（余量 {driverOf(trip).capacityKg - loadedKg(state.orders, trip.id)}kg）
+                      </option>
                     ))}
-                  </div>
-                  <p className="note">{record.notes}</p>
-                  <div className="actions">
-                    <button type="button" onClick={() => updateRecords(records.map((item) => item.id === record.id ? { ...item, status: nextStatus(item.status) } : item))}>
-                      流转状态
-                    </button>
-                    <button className="secondary" type="button" onClick={() => navigator.clipboard?.writeText(primaryText(record))}>
-                      复制摘要
-                    </button>
-                    <button className="danger" type="button" onClick={() => updateRecords(records.filter((item) => item.id !== record.id))}>
-                      删除
-                    </button>
-                  </div>
-                </article>
-              ))}
-            </div>
+                  </select>
+                </label>
+                <label>
+                  改派原因
+                  <input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="如：嘉定线封路，整批改派" />
+                </label>
+                <button type="button" disabled={!selected.length || !targetTripId || !reason.trim()} onClick={handleTransfer}>
+                  执行改派
+                </button>
+                <p className="hint">校验规则：超吨 / 时段相撞 / 错过下一站 / 易碎需缓冲箱；未通过的单据留在待处理区并注明原因。</p>
+              </div>
+            </section>
 
-            <div className="mini-chart">
-              {chartRows.map((row) => (
-                <div className="bar" key={row.status}>
-                  <span>{row.status}</span>
-                  <div className="bar-track"><div className="bar-fill" style={{ width: `${(row.value / maxChart) * 100}%` }} /></div>
-                  <strong>{row.value}</strong>
+            <section className="panel">
+              <h2>改派记录</h2>
+              {state.logs.length === 0 ? <div className="empty">暂无改派记录</div> : (
+                <div className="log-list">
+                  {state.logs.map((log) => (
+                    <article className="log-item" key={log.id}>
+                      <p className="log-head">{log.orderNos.join("、")}</p>
+                      <p className="log-route">{tripLabel(log.fromTripId, trips)} → {tripLabel(log.toTripId, trips)}</p>
+                      <p className="log-meta">原因：{log.reason} · {formatTime(log.time)}</p>
+                    </article>
+                  ))}
                 </div>
-              ))}
-            </div>
-          </section>
+              )}
+            </section>
+          </div>
         </section>
       </div>
     </main>
